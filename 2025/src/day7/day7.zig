@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Cell = union(enum) { source, splitter, stream: u64, empty };
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -39,20 +41,20 @@ fn part1(alloc: std.mem.Allocator, input: []const u8) !usize {
 
     // Just iterate, nothing fancy
     for (grid.items, 0..) |row, j| {
-        defer std.debug.print("{s}\n", .{grid.items[j]});
+        // defer std.debug.print("{s}\n", .{grid.items[j]});
         if (j == 0) continue;
 
         for (row, 0..) |_, i| {
             const current = grid.items[j][i];
-            const above = grid.items[j-1][i];
+            const above = grid.items[j - 1][i];
             // std.debug.print("{any}\n", .{@TypeOf(above)});
             // std.debug.print("{any}\n", .{above});
             if (above == 'S') {
                 grid.items[j][i] = '|';
             } else if (current == '^' and above == '|') {
                 // NOTE: don't think we need bounds check
-                grid.items[j][i-1] = '|';
-                grid.items[j][i+1] = '|';
+                grid.items[j][i - 1] = '|';
+                grid.items[j][i + 1] = '|';
                 num_splits += 1;
             } else if (current == '.' and above == '|') {
                 grid.items[j][i] = '|';
@@ -63,23 +65,37 @@ fn part1(alloc: std.mem.Allocator, input: []const u8) !usize {
     return num_splits;
 }
 
-fn isStream(c: u64) bool {
-    return (c != '^' and c != '.');
+fn isStream(cell: Cell) bool {
+    return switch (cell) {
+        .stream => true,
+        .source => true, // treat source as a stream start
+        else => false,
+    };
 }
 
-fn streamValue(c: u64) u64 {
+fn streamValue(cell: Cell) u64 {
     // std.debug.assert(isStream(c));
-    switch (c) {
-        'S' => return 1,
-        '|' => return 1,
-        '.' => return 0,
-        else => return c
+    switch (cell) {
+        .source => return 1,
+        .stream => |value| return value,
+        .empty => return 0,
+        .splitter => return 0,
     }
     unreachable;
 }
 
+fn toCell(c: u8) Cell {
+    switch (c) {
+        '^' => return .splitter,
+        'S' => return .source,
+        '|' => return Cell{ .stream = 1 },
+        '.' => return .empty,
+        else => unreachable,
+    }
+}
+
 fn part2(alloc: std.mem.Allocator, input: []const u8) !usize {
-    var grid: std.ArrayList([]u64) = .empty;
+    var grid: std.ArrayList([]Cell) = .empty;
     defer {
         for (grid.items) |row| {
             alloc.free(row);
@@ -90,18 +106,15 @@ fn part2(alloc: std.mem.Allocator, input: []const u8) !usize {
     var iter = std.mem.splitScalar(u8, input, '\n');
     while (iter.next()) |line| {
         if (line.len == 0) continue;
-        const row = try alloc.alloc(u64, line.len);
+        const row = try alloc.alloc(Cell, line.len);
         for (line, 0..) |char, k| {
-            row[k] = @as(u64, char);
+            row[k] = toCell(char);
         }
         try grid.append(alloc, row);
         // try grid.append(alloc, try alloc.dupe(u8, line));
     }
 
     const num_rows = grid.items.len;
-    const num_cols = grid.items[0].len;
-    std.debug.print("num_rows: {}\n", .{num_rows});
-    std.debug.print("num_cols: {}\n", .{num_cols});
 
     // Just iterate, nothing fancy
     for (grid.items, 0..) |row, j| {
@@ -110,17 +123,17 @@ fn part2(alloc: std.mem.Allocator, input: []const u8) !usize {
 
         for (row, 0..) |_, i| {
             const current = grid.items[j][i];
-            const above = grid.items[j-1][i];
-            // std.debug.print("{any}\n", .{@TypeOf(above)});
-            // std.debug.print("{any}\n", .{above});
-            if (above == 'S') {
-                grid.items[j][i] = 1;
-            } else if (current == '^' and isStream(above)) {
-                // NOTE: don't think we need bounds check
-                grid.items[j][i-1] = streamValue(grid.items[j][i-1]) + streamValue(above);
-                grid.items[j][i+1] = streamValue(grid.items[j][i+1]) + streamValue(above);
-            } else if (current != '^' and isStream(above)) { // tricky
-                grid.items[j][i] = streamValue(grid.items[j][i]) + streamValue(above);
+            const above = grid.items[j - 1][i];
+            if (above == .source) {
+                grid.items[j][i] = Cell{ .stream = 1 };
+            } else if (current == .splitter and isStream(above)) {
+                const leftVal = streamValue(grid.items[j][i - 1]) + streamValue(above);
+                grid.items[j][i - 1] = Cell{ .stream = leftVal };
+                const rightVal = streamValue(grid.items[j][i + 1]) + streamValue(above);
+                grid.items[j][i + 1] = Cell{ .stream = rightVal };
+            } else if (current != .splitter and isStream(above)) { // tricky
+                const val = streamValue(grid.items[j][i]) + streamValue(above);
+                grid.items[j][i] = Cell{ .stream = val };
             }
         }
     }
@@ -128,10 +141,8 @@ fn part2(alloc: std.mem.Allocator, input: []const u8) !usize {
     // try printEncodedGrid(grid);
 
     var num_paths: usize = 0;
-    for (grid.items[num_rows-1]) |c| {
-        if (isStream(c)) {
-            num_paths += c;
-        }
+    for (grid.items[num_rows - 1]) |c| {
+        num_paths += streamValue(c);
     }
 
     return num_paths;
