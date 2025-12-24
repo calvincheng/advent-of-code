@@ -1,70 +1,107 @@
 const std = @import("std");
+const combos = @import("combos.zig");
+const ComboIterator = combos.ComboIterator;
 
-const Machine = struct {
-    state: u8,
-    buttons: std.ArrayList(u8),
-    joltage: std.ArrayList(u8),
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
 
-    fn init() Machine {
-        return Machine{
-            .state = 0,
-            .buttons = .empty,
-            .joltage = .empty,
-        };
+    const input = try std.fs.cwd()
+        .readFileAlloc(alloc, "day10/input.txt", 1 * 1024 * 1024);
+    defer alloc.free(input);
+
+    const part1_solution = try part1(alloc, input);
+    std.debug.print("part1: {}\n", .{part1_solution});
+}
+
+fn part1(alloc: std.mem.Allocator, input: []const u8) !usize {
+    var solution: usize = 0;
+
+    var iter = std.mem.splitScalar(u8, input, '\n');
+    while (iter.next()) |line| {
+        if (line.len == 0) continue;
+
+        const goal = parseState(line);
+
+        const buttons = try parseButtons(alloc, line);
+        defer alloc.free(buttons);
+
+        const minPresses = try bruteForce(alloc, goal, buttons);
+        std.debug.print("minPresses: {}\n", .{minPresses});
+
+        solution += minPresses;
     }
 
-    fn deinit(self: *Machine, alloc: std.mem.Allocator) void {
-        self.buttons.deinit(alloc);
-        self.joltage.deinit(alloc);
-    }
-};
+    return solution;
+}
 
-fn parseLine(alloc: std.mem.Allocator, line: []const u8) !Machine {
-    var machine = Machine.init();
+fn parseState(line: []const u8) u16 {
+    if (line[0] != '[') unreachable;
 
-    var it = std.mem.tokenizeAny(u8, line, " \t\n");
-    while (it.next()) |tok| {
-        if (tok.len == 0) continue;
+    var mask: u16 = 0;
+    var i: usize = 1;
 
-        switch (tok[0]) {
-            '[' => { // parse initial state
-                for (1..tok.len - 1) |i| {
-                    const c = tok[i];
-                    if (c == '#') {
-                        machine.state |= @as(u8, 1) << @intCast(i);
-                    }
-                }
+    while (line[i] != ']') : (i += 1) {
+        switch (line[i]) {
+            '#' => {
+                mask |= (@as(u16, 1) << @as(u4, @intCast(i - 1)));
             },
-            '(' => { // parse mask
-                var mask: u8 = 0;
-                var subtok = std.mem.tokenizeAny(u8, tok[1 .. tok.len - 1], ",");
-                while (subtok.next()) |numtok| {
-                    const pos = try std.fmt.parseInt(u8, numtok, 10);
-                    mask |= @as(u8, 1) << @intCast(pos);
-                }
-                try machine.buttons.append(alloc, mask);
-            },
-            '{' => { // parse numbers
-                var subtok = std.mem.tokenizeAny(u8, tok[1 .. tok.len - 1], ",");
-                while (subtok.next()) |numtok| {
-                    const val = try std.fmt.parseInt(u8, numtok, 10);
-                    try machine.joltage.append(alloc, val);
-                }
-            },
-            else => {},
+            '.' => {},
+            else => unreachable,
         }
     }
 
-    // Debug print
-    std.debug.print("Desired state: {b:0>8}\n", .{machine.state});
-    for (machine.buttons.items) |m| {
-        std.debug.print("Button: {b:0>8}\n", .{m});
-    }
-    for (machine.joltage.items) |n| {
-        std.debug.print("Joltage: {}\n", .{n});
+    return mask;
+}
+
+fn parseButtons(alloc: std.mem.Allocator, line: []const u8) ![]u16 {
+    var buttons: std.ArrayList(u16) = .empty;
+
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '(') {
+            var j = i;
+            while (j < line.len) : (j += 1) {
+                if (line[j] == ')') break;
+            }
+
+            var button: u16 = 0;
+            var tokens = std.mem.tokenizeScalar(u8, line[i + 1 .. j], ',');
+            while (tokens.next()) |token| {
+                const position = try std.fmt.parseInt(usize, token, 10);
+                button |= (@as(u16, 1) << @as(u4, @intCast(position)));
+            }
+
+            try buttons.append(alloc, button);
+            i = j;
+        }
+        i += 1;
     }
 
-    return machine;
+    return try buttons.toOwnedSlice(alloc);
+}
+
+fn bruteForce(alloc: std.mem.Allocator, goal: u16, buttons: []const u16) !usize {
+    const n = buttons.len;
+
+    for (1..buttons.len + 1) |k| {
+        var iter = try ComboIterator.init(alloc, n, k);
+        defer iter.deinit(alloc);
+
+        const combo = try alloc.alloc(usize, k);
+        defer alloc.free(combo);
+
+        while (iter.next(combo)) {
+            var state: u16 = 0;
+            for (combo) |i| state ^= buttons[i];
+            if (state == goal) {
+                return k;
+            }
+        }
+    }
+
+    return 0;
 }
 
 test "example" {
@@ -74,21 +111,28 @@ test "example" {
         \\[.###.#] (0,1,2,3,4) (0,3,4) (0,1,2,4,5) (1,2) {10,11,11,5,10,5}
     ;
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    const alloc = std.testing.allocator;
 
-    var machines: std.ArrayList(Machine) = .empty;
-    defer {
-        for (machines.items) |*m| {
-            m.deinit(alloc);
-        }
-        machines.deinit(alloc);
-    }
+    var part1_solution: usize = 0;
 
     var iter = std.mem.splitScalar(u8, input, '\n');
     while (iter.next()) |line| {
-        const machine = try parseLine(alloc, line);
-        try machines.append(alloc, machine);
+        const goal = parseState(line);
+        std.debug.print("goal: {b}\n", .{goal});
+
+        const buttons = try parseButtons(alloc, line);
+        defer alloc.free(buttons);
+
+        std.debug.print("buttons: ", .{});
+        for (buttons) |button| {
+            std.debug.print("{b} ", .{button});
+        }
+        std.debug.print("\n", .{});
+
+        const solution = try bruteForce(alloc, goal, buttons);
+        std.debug.print("solution: {}\n", .{solution});
+
+        part1_solution += solution;
     }
+    std.debug.print("part1: {}\n", .{part1_solution});
 }
